@@ -1,11 +1,28 @@
+#emit "#include <stdio.h>"
 printf :: fn(fmt: string, args: ..) #foreign;
 scanf :: fn(fmt: string, args: ..) #foreign;
 
+Foo :: struct {
+    bar: int,
+}
+
+take_foo :: fn(foo: @Foo) {
+    foo.bar += 10;
+}
+
+take_int :: fn(a: int) {
+    printf("a = %d\n", a);
+}
+
 main :: fn() int {
     x := 20;
+    foo: Foo;
+    foo.bar = 10;
 
-    printf("Pick a number: \n");
-    scanf("%d", @x);
+    take_int(foo.bar);
+
+    // printf("Pick a number: \n");
+    // scanf("%d", @x);
 
     printf("Counting up to %d\n", x);
 

@@ -1,15 +1,26 @@
-// ----------- INCLUDES -----------
-#include <stdio.h>
-#include <stdlib.h>
-
 // ----------- FORWARD DECLARATIONS -----------
+void take_foo(Foo* foo);
+void take_int(int a);
 int main();
 
 // ----------- PROGRAM CODE -----------
+#include <stdio.h>
+typedef struct {
+int bar ;
+} Foo;
+void take_foo(Foo* foo) {
+    foo.bar += 10;
+}
+
+void take_int(int a) {
+    printf("a = %d\n", a);
+}
+
 int main() {
     int x = 20;
-    printf("Pick a number: \n");
-    scanf("%d", (&x));
+    Foo foo = {0};
+    foo.bar = 10;
+    take_int(foo.bar);
     printf("Counting up to %d\n", x);
     int i = 1;
     while ((i <= x)) {
