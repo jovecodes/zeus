@@ -17,8 +17,8 @@ take_int :: fn(a: int) {
 main :: fn() int {
     x := 20;
     foo: Foo;
-    foo.bar = 10;
 
+    take_foo(@foo);
     take_int(foo.bar);
 
     // printf("Pick a number: \n");

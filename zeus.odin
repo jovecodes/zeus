@@ -1413,9 +1413,18 @@ get_type_of :: proc(ctx: ^ParseCtx, ast: Ast) -> Type {
             outer := get_type_of(ctx, it.node)
 
             structure: StructType
+            ok := false
             #partial switch _ in outer {
-            case StructType: structure = outer.(StructType)
-            case PointerType: structure = outer.(PointerType).inner.(StructType)
+            case StructType: 
+                structure = outer.(StructType)
+                ok = true
+            case PointerType: 
+                structure = outer.(PointerType).inner.(StructType)
+                ok = true
+            }
+            if !ok {
+                compiler_error(ctx.file, it.span, "Can not access on non struct type.")
+                return PrimitiveType.UNKNOWN;
             }
             for field in structure.ast.fields {
                 if field.name == it.value {
@@ -1680,7 +1689,7 @@ c_type :: proc(ctx: ^ParseCtx, type: ^Type) -> string {
 
     case PointerType: return fmt.aprintf("%v*", c_type(ctx, type.(PointerType).inner))
     case ArrayType: return "<ARRAY>"
-    case StructType: return type.(StructType).ast.name
+    case StructType: return fmt.aprintf("struct %v", type.(StructType).ast.name)
     case FunctionType: return "<FUNCTION TYPE>"
     }
     return "<UNREACHABLE>"
@@ -1721,10 +1730,11 @@ c_function_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
 c_scope_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
     it := ast.(^AstScope);
 
+    old_scope := ctx.parser.current_scope
+    ctx.parser.current_scope = it.table
+
     is_file := it.flags & int(ScopeFlags.FILE) != 0
-
     lines : strings.Builder
-
     pad := strings.repeat("    ", ctx.indent)
     defer delete(pad)
 
@@ -1735,9 +1745,23 @@ c_scope_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
     defer delete(outside_pad)
 
     if is_file { 
-        fmt.sbprintln(&lines, "// ----------- FORWARD DECLARATIONS -----------")
+        fmt.sbprintln(&lines, "// ----------- FORWARD DECLARATIONS (TYPES) -----------")
 
         ctx.forward_declare = true;
+
+        for stmt in it.stmts {
+            #partial switch _ in stmt {
+            case ^AstDeclaration: 
+                decl := stmt.(^AstDeclaration)
+                #partial switch _ in decl.value {
+                case ^AstStruct: 
+                    fmt.sbprintf(&lines, "struct %v;\n", decl.name)
+                }
+            }
+        }
+
+        fmt.sbprintln(&lines, "\n// ----------- FORWARD DECLARATIONS (FUNCTIONS) -----------")
+
         for stmt in it.stmts {
             #partial switch _ in stmt {
             case ^AstDeclaration: 
@@ -1794,6 +1818,8 @@ c_scope_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
         fmt.sbprint(&lines, outside_pad)
         fmt.sbprintln(&lines, "}") 
     }
+
+    ctx.parser.current_scope = old_scope
     return strings.to_string(lines)
 }
 
@@ -1839,7 +1865,7 @@ c_declaration_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
             ret := &it.value.(^AstProcedure).return_type
             return fmt.aprintf("%v %v%v", c_type(ctx.parser, ret), it.name, c_code_gen(ctx, it.value))
         case ^AstStruct: 
-            return fmt.aprintf("typedef %v %v", c_code_gen(ctx, it.value), it.name)
+            return fmt.aprintf("struct %v %v", it.name, c_code_gen(ctx, it.value))
         }
         return fmt.aprintf("%v %v = %v", c_type(ctx.parser, &it.type), it.name, c_code_gen(ctx, it.value))
     }
@@ -1852,7 +1878,10 @@ c_code_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
             return fmt.aprintf("(%v %v %v)", c_code_gen(ctx, it.lhs), op_to_string(it.op), c_code_gen(ctx, it.rhs))
         case ^AstAccess:
             it := ast.(^AstAccess);
-            #partial switch _ in get_type_of(ctx.parser, it.node) {
+
+            t := get_type_of(ctx.parser, it.node)
+            // defer free_type(&t) @Leak
+            #partial switch _ in t {
             case PointerType: return fmt.aprintf("%v->%v", c_code_gen(ctx, it.node), it.value)
             }
             // @Unfinished @Todo check if the node is a pointer and if so, deref it.
@@ -1882,7 +1911,7 @@ c_code_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
         case ^AstStruct:
             it := ast.(^AstStruct);
             code: strings.Builder
-            fmt.sbprintln(&code, "struct {")
+            fmt.sbprintln(&code, "{")
             for field in it.fields {
                 t := field.type
                 fmt.sbprintln(&code, c_type(ctx.parser, &t), field.name, ";")

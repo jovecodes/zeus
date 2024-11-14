@@ -1,15 +1,18 @@
-// ----------- FORWARD DECLARATIONS -----------
-void take_foo(Foo* foo);
+// ----------- FORWARD DECLARATIONS (TYPES) -----------
+struct Foo;
+
+// ----------- FORWARD DECLARATIONS (FUNCTIONS) -----------
+void take_foo(struct Foo* foo);
 void take_int(int a);
 int main();
 
 // ----------- PROGRAM CODE -----------
 #include <stdio.h>
-typedef struct {
+struct Foo {
 int bar ;
-} Foo;
-void take_foo(Foo* foo) {
-    foo.bar += 10;
+};
+void take_foo(struct Foo* foo) {
+    foo->bar += 10;
 }
 
 void take_int(int a) {
@@ -18,8 +21,8 @@ void take_int(int a) {
 
 int main() {
     int x = 20;
-    Foo foo = {0};
-    foo.bar = 10;
+    struct Foo foo = {0};
+    take_foo((&foo));
     take_int(foo.bar);
     printf("Counting up to %d\n", x);
     int i = 1;
