@@ -28,9 +28,9 @@ TokenType :: enum u8 {
     LT, // <
     LE, // <=
 
-    OPEN_PAREN, CLOSE_PAREN,
-    OPEN_BRACE,
-    CLOSE_BRACE,
+    OPEN_PAREN, CLOSE_PAREN, // ()
+    OPEN_BRACE, CLOSE_BRACE, // {}
+    OPEN_BRACKET, CLOSE_BRACKET, // []
 
     DOT_DOT, // ..
     DOT, // .
@@ -118,6 +118,9 @@ OPERATOR_MAP :: [] TokenMap{
 
     TokenMap{"{", .OPEN_BRACE},
     TokenMap{"}", .CLOSE_BRACE},
+
+    TokenMap{"[", .OPEN_BRACKET},
+    TokenMap{"]", .CLOSE_BRACKET},
 
     TokenMap{"+", .ADD},
     TokenMap{"-", .SUB},
@@ -283,6 +286,12 @@ AstStringLit :: struct {
     span: Span,
 }
 
+AstArrayLit :: struct {
+    values: [dynamic] Ast,
+    type: Type,
+    span: Span,
+}
+
 AstBinOp :: struct {
     lhs: Ast,
     op: TokenType,
@@ -322,7 +331,7 @@ ScopeFlags :: enum {
 
 AstScope :: struct {
     stmts: [dynamic] Ast,
-    table: ^SymbolTable,
+    table: int,
     flags: int,
     span: Span,
 }
@@ -359,6 +368,7 @@ AstStruct :: struct {
     fields: [dynamic] StructField,
     name: string,
     flags: int,
+    size: int,
     span: Span,
 }
 
@@ -395,6 +405,7 @@ Ast :: union {
     ^AstNumberLit,
     ^AstVariable,
     ^AstStringLit,
+    ^AstArrayLit,
     ^AstBinOp,
     ^AstUnaryOp,
     ^AstDeclaration,
@@ -414,8 +425,12 @@ Ast :: union {
 ParseCtx :: struct {
     tokens: [] Token,
     file: ^FileCtx,
-    current_scope: ^SymbolTable,
+    current_scope: int,
     scopes: [dynamic] SymbolTable
+}
+
+get_current_scope :: proc(ctx: ^ParseCtx) -> ^SymbolTable {
+    return &ctx.scopes[ctx.current_scope];
 }
 
 advance_token :: proc(ctx: ^ParseCtx) {
@@ -461,6 +476,7 @@ is_assign_op :: proc(op: TokenType) -> bool {
 is_compare_op :: proc(op: TokenType) -> bool {
     #partial switch op {
     case .EQUALITY: return true
+    case .INEQUALITY: return true
     case .GT: return true
     case .GE: return true
     case .LT: return true
@@ -502,6 +518,50 @@ parse_primary :: proc(ctx: ^ParseCtx) -> Ast {
         it^ = AstStringLit{tokens[0].value, span_from_token(&tokens[0])}
         advance_token(ctx)
         return it
+    case .OPEN_BRACKET:
+        start := span_from_token(&tokens[0])
+        end := start
+
+        advance_token(ctx)
+
+        is_dynamic := false
+        if expect_token(ctx, .DOT_DOT) != nil {
+            is_dynamic = true
+        }
+        if expect_token(ctx, .CLOSE_BRACKET) == nil {
+            parser_error_at_next(ctx, "Expected ']' since fixed size arrays are not yet supported. Sorry!")
+            return nil
+        }
+
+        inner_type := new(Type)
+        inner_type^ = parse_type(ctx)
+        if expect_token(ctx, .OPEN_BRACE) == nil {
+            parser_error_at_next(ctx, "Expected '{{' to start array literal.")
+            return nil
+        }
+
+        values: [dynamic] Ast
+        if expect_token(ctx, .CLOSE_BRACE) == nil {
+            for true {
+                append(&values, parse_expr(ctx))
+                if expect_token(ctx, .CLOSE_BRACE) != nil {
+                    end = span_from_token(&tokens[0])
+                    break
+                }
+                if expect_token(ctx, .COMMA) == nil {
+                    parser_error_at_next(ctx, "Expected either ',' or '}' after value in array literal.")
+                    break
+                }
+            }
+        }
+
+        type := ArrayType{inner_type, is_dynamic}
+
+        it := new(AstArrayLit)
+        it^ = AstArrayLit{values, type, span_stretch(&start, &end)}
+
+        return it
+
     case .IDENT:
         name := &tokens[0]
         advance_token(ctx)
@@ -528,8 +588,8 @@ parse_primary :: proc(ctx: ^ParseCtx) -> Ast {
             return it
         } else {
             it := new(AstVariable)
-            it^ = AstVariable{name.value, span_from_token(name), ctx.current_scope.n}
-            ctx.current_scope.n += 1
+            it^ = AstVariable{name.value, span_from_token(name), get_current_scope(ctx).n}
+            get_current_scope(ctx).n += 1
             return it
         }
     case .OPEN_PAREN:
@@ -572,6 +632,7 @@ get_span :: proc(ast: Ast) -> ^Span {
         case ^AstVariable: return &ast.(^AstVariable).span 
         case ^AstNumberLit: return &ast.(^AstNumberLit).span 
         case ^AstStringLit: return &ast.(^AstStringLit).span
+        case ^AstArrayLit: return &ast.(^AstArrayLit).span
         case ^AstDeclaration: return &ast.(^AstDeclaration).span
         case ^AstProcedureCall: return &ast.(^AstProcedureCall).span
         case ^AstScope: return &ast.(^AstScope).span
@@ -598,6 +659,11 @@ parse_declaration :: proc(ctx: ^ParseCtx, lhs: Ast) -> Ast {
     #partial switch _ in lhs {
     case ^AstVariable: is_name = true
     }
+
+    it := new(AstDeclaration)
+    it.name = lhs.(^AstVariable).value
+    symbol_table_insert(ctx, it)
+
     if !is_name {
         parser_error_at_next(ctx, "Expected variable name before ':'")
         return nil
@@ -637,11 +703,7 @@ parse_declaration :: proc(ctx: ^ParseCtx, lhs: Ast) -> Ast {
         case ^AstStruct: value.(^AstStruct).name = lhs.(^AstVariable).value
         }
     }
-
-    it := new(AstDeclaration)
     it^ = AstDeclaration{lhs.(^AstVariable).value, type, value, flags, span_stretch(get_span(lhs), &end)}
-
-    symbol_table_insert(ctx, it)
 
     return it
 }
@@ -825,7 +887,7 @@ parse_struct :: proc(ctx: ^ParseCtx) -> Ast {
     end := span_from_token(close_brace)
 
     it := new(AstStruct)
-    it^ = AstStruct{fields, "", flags, span_stretch(&start, &end)}
+    it^ = AstStruct{fields, "", flags, -1, span_stretch(&start, &end)}
     return it
 }
 
@@ -872,12 +934,33 @@ parse_type :: proc(ctx: ^ParseCtx, span: ^Span = nil) -> Type {
         if span != nil { span^ = span_stretch(span, &end_span) }
 
         return PointerType{inner}
-    } 
+    }
+
+    if token.type == .OPEN_BRACKET {
+        is_dynamic := false
+        if expect_token(ctx, .DOT_DOT) != nil {
+            is_dynamic = true
+        }
+        if expect_token(ctx, .CLOSE_BRACKET) == nil {
+            parser_error_at_next(ctx, "Expected ']' since fixed size arrays are not yet supported. Sorry!")
+            return nil
+        }
+
+        end_span: Span
+        inner := new(Type)
+        inner^ = parse_type(ctx, &end_span)
+        if span != nil { span^ = span_stretch(span, &end_span) }
+
+        return ArrayType{inner, is_dynamic}
+    }
 
     if token.type == .IDENT {
-        sym, _ := symbol_table_lookup(ctx.current_scope, token.value)
+        sym, _ := symbol_table_lookup(ctx, token.value)
         if sym == nil {
             parser_error_at_next(ctx, "Unknown type '%v'.", token.value)
+        }
+        if sym.ast.value == nil {
+            return UnparsedType{sym.ast}
         }
         // @Unfinished @Todo check that sym.ast.value is a struct and give an error if it isn't.
         return StructType{sym.ast.value.(^AstStruct)}
@@ -952,6 +1035,8 @@ parse_stmt :: proc(ctx: ^ParseCtx) -> Ast {
     case .SEMI_COLON: 
         advance_token(ctx)
         return parse_stmt(ctx)
+    case .OPEN_BRACE:
+        return parse_scope(ctx)
     case .KEYWORD_RETURN:
         res := parse_return_stmt(ctx)
         if expect_token(ctx, .SEMI_COLON) == nil { 
@@ -992,22 +1077,22 @@ next_token_value :: proc(ctx: ^ParseCtx) -> string {
     }
 }
 
-push_scope :: proc(ctx: ^ParseCtx) -> ^SymbolTable {
+push_scope :: proc(ctx: ^ParseCtx) -> int {
     append(&ctx.scopes, SymbolTable{})
-    it := &ctx.scopes[len(ctx.scopes) - 1]
 
-    it.parent = ctx.current_scope
-    ctx.current_scope = it
-    return it
+    index := len(ctx.scopes) - 1
+    ctx.scopes[index].parent = ctx.current_scope
+    ctx.current_scope = index
+    return index
 }
 
 pop_scope :: proc(ctx: ^ParseCtx) -> bool {
-    if ctx.current_scope.parent == nil { 
+    if get_current_scope(ctx).parent == -1 { 
         parser_error_at_next(ctx, "Trying to pop scope on global scope.")
         return false 
     }
 
-    ctx.current_scope = ctx.current_scope.parent
+    ctx.current_scope = get_current_scope(ctx).parent
     return true
 }
 
@@ -1063,6 +1148,7 @@ parse :: proc(ctx: ^ParseCtx) -> Ast {
 
     it := new(AstScope)
     it^ = AstScope{stmts, global_scope, flags, Span{0, len(ctx.file.input) - 1}}
+
     return it
 }
 
@@ -1079,6 +1165,7 @@ op_to_string :: proc(op: TokenType) -> string {
     case .MUL_ASSIGN: return "*="
     case .DIV_ASSIGN: return "/="
     case .EQUALITY: return "=="
+    case .INEQUALITY: return "!="
     case .GT: return ">"
     case .GE: return ">="
     case .LT: return "<"
@@ -1119,6 +1206,7 @@ ast_to_string :: proc(ast: Ast, indent := 0) -> string {
         case ^AstNumberLit: return ast.(^AstNumberLit).value;
         case ^AstVariable: return ast.(^AstVariable).value;
         case ^AstStringLit: return strings.concatenate({"\"", ast.(^AstStringLit).value, "\""});
+        case ^AstArrayLit: return "<ARRAY LITERAL>"
         
         case ^AstDeclaration: 
             it := ast.(^AstDeclaration);
@@ -1291,13 +1379,19 @@ PointerType :: struct {
 
 ArrayType :: struct {
     inner: ^Type,
+    is_dynamic: bool,
 }
 
 StructType :: struct {
     ast: ^AstStruct,
 }
 
+UnparsedType :: struct {
+    ast: Ast,
+}
+
 Type :: union {
+    UnparsedType,
     PrimitiveType,
     PointerType,
     ArrayType,
@@ -1315,12 +1409,12 @@ Symbol :: struct {
 
 SymbolTable :: struct {
     symbols: map[string] Symbol,
-    parent: ^SymbolTable,
+    parent: int,
     n: int,
 }
 
 symbol_table_insert :: proc(ctx: ^ParseCtx, ast: ^AstDeclaration) {
-    table := ctx.current_scope
+    table := get_current_scope(ctx)
     if ast.name in table.symbols {
         compiler_error(ctx.file, get_span(ast)^, "Trying to redefine symbol of name '%v'", ast.name)
     } else {
@@ -1329,15 +1423,30 @@ symbol_table_insert :: proc(ctx: ^ParseCtx, ast: ^AstDeclaration) {
     }
 }
 
-symbol_table_lookup :: proc(table: ^SymbolTable, name: string) -> (^Symbol, ^SymbolTable) {
-    current := table
-    for current != nil {
-        if name in current.symbols {
-            return &current.symbols[name], current
+symbol_table_lookup_from :: proc(from: int, ctx: ^ParseCtx, name: string) -> (^Symbol, int) {
+    current := ctx.current_scope
+    for current != -1 {
+        if name in ctx.scopes[current].symbols {
+            return &ctx.scopes[current].symbols[name], current
         }
-        current = current.parent
+        current = ctx.scopes[current].parent
     }
-    return nil, nil // Not found
+    return nil, -1 // Not found
+}
+
+symbol_table_lookup :: proc(ctx: ^ParseCtx, name: string) -> (^Symbol, int) {
+    // c := table
+    // fmt.println("Symbols:")
+    // indent := 1;
+    // for c != nil {
+    //     for i in c.symbols {
+    //         fmt.println(strings.repeat("    ", indent), "-", i)
+    //     }
+    //     indent += 1
+    //     c = c.parent
+    // }
+    
+    return symbol_table_lookup_from(ctx.current_scope, ctx, name)
 }
 
 free_type :: proc(t: ^Type) {
@@ -1379,7 +1488,7 @@ get_type_of :: proc(ctx: ^ParseCtx, ast: Ast) -> Type {
             
         case ^AstVariable: 
             it := ast.(^AstVariable)
-            decl, _ := symbol_table_lookup(ctx.current_scope, it.value)
+            decl, _ := symbol_table_lookup(ctx, it.value)
             if decl == nil { return PrimitiveType.UNKNOWN }
             if decl.ast.type == PrimitiveType.UNKNOWN {
                 decl.ast.type = get_type_of(ctx, decl.ast.value)
@@ -1388,11 +1497,14 @@ get_type_of :: proc(ctx: ^ParseCtx, ast: Ast) -> Type {
 
         case ^AstNumberLit: return PrimitiveType.NUMBER
         case ^AstStringLit: return PrimitiveType.STRING
+
+        case ^AstArrayLit: return ast.(^AstArrayLit).type
+
         case ^AstDeclaration: return PrimitiveType.VOID
 
         case ^AstProcedureCall:
             it := ast.(^AstProcedureCall);
-            decl, _ := symbol_table_lookup(ctx.current_scope, it.procedure)
+            decl, _ := symbol_table_lookup(ctx, it.procedure)
             #partial switch _ in decl.ast.value {
             case ^AstProcedure: return decl.ast.value.(^AstProcedure).return_type
             }
@@ -1421,6 +1533,11 @@ get_type_of :: proc(ctx: ^ParseCtx, ast: Ast) -> Type {
             case PointerType: 
                 structure = outer.(PointerType).inner.(StructType)
                 ok = true
+            case ArrayType:
+                if it.value == "count" {
+                    return PrimitiveType.INT;
+                }
+                compiler_error(ctx.file, it.span, "Arrays do not have property '%v'.", it.value)
             }
             if !ok {
                 compiler_error(ctx.file, it.span, "Can not access on non struct type.")
@@ -1464,6 +1581,14 @@ compare_types :: proc(a: Type, b: Type) -> bool {
         #partial switch _ in b {
         case PointerType: 
             return compare_types(a.(PointerType).inner^, b.(PointerType).inner^)
+        }
+        return false
+    case ArrayType:
+        #partial switch _ in b {
+        case ArrayType: 
+            a_arr := a.(ArrayType)
+            b_arr := b.(ArrayType)
+            return a_arr.is_dynamic == b_arr.is_dynamic && compare_types(a_arr.inner^, b_arr.inner^)
         }
         return false
     }
@@ -1528,15 +1653,30 @@ semantic_analize :: proc(ctx: ^ParseCtx, ast: Ast) {
             
         case ^AstVariable: 
             it := ast.(^AstVariable)
-            decl, scope := symbol_table_lookup(ctx.current_scope, it.value)
+            decl, scope := symbol_table_lookup(ctx, it.value)
             if decl == nil || (scope == ctx.current_scope && decl.n > it.n) {
                 compiler_error(ctx.file, get_span(it)^, "Use of undeclared variable '%v'", it.value)
             }
 
         case ^AstNumberLit: 
         case ^AstStringLit:
+
+        case ^AstArrayLit:
+            it := ast.(^AstArrayLit);
+            inner_type := it.type.(ArrayType).inner^
+            for val in it.values {
+                t := get_type_of(ctx, val);
+                if !compare_types(t, inner_type) {
+                    compiler_error(ctx.file, get_span(val)^, "Found value of type %v in array of %v", 
+                        type_to_string(t), type_to_string(it.type.(ArrayType).inner^))
+                }
+            }
+            
         case ^AstDeclaration:
             it := ast.(^AstDeclaration);
+            #partial switch _ in it.type {
+            case UnparsedType: it.type = StructType{it.type.(UnparsedType).ast.(^AstDeclaration).value.(^AstStruct)} // @Hack @Unfinished Properly check what type it is and use that.
+            }
             if it.value == nil {
                 if it.type == PrimitiveType.UNKNOWN {
                     compiler_error(ctx.file, it.span, "Declaration without value needs a type.")
@@ -1565,7 +1705,7 @@ semantic_analize :: proc(ctx: ^ParseCtx, ast: Ast) {
 
         case ^AstProcedureCall:
             it := ast.(^AstProcedureCall);
-            decl, _ := symbol_table_lookup(ctx.current_scope, it.procedure)
+            decl, _ := symbol_table_lookup(ctx, it.procedure)
             if decl == nil {
                 compiler_error(ctx.file, get_span(it)^, "Use of undeclared function '%v'.", it.procedure)
             }
@@ -1583,7 +1723,7 @@ semantic_analize :: proc(ctx: ^ParseCtx, ast: Ast) {
             types: [dynamic] Type
             defer delete(types)
 
-            for arg in it.args {
+            for &arg in it.args {
                 semantic_analize(ctx, arg)
                 append(&types, get_type_of(ctx, arg))
             }
@@ -1623,12 +1763,11 @@ semantic_analize :: proc(ctx: ^ParseCtx, ast: Ast) {
         case ^AstScope:
             it := ast.(^AstScope);
 
-            old := ctx.current_scope
             ctx.current_scope = it.table
-            for stmt in it.stmts {
-                semantic_analize(ctx, stmt)         
+            for &stmt in it.stmts {
+                semantic_analize(ctx, stmt)
             }
-            ctx.current_scope = old
+            ctx.current_scope = get_current_scope(ctx).parent
             
         case ^AstProcedure:
             it := ast.(^AstProcedure);
@@ -1636,7 +1775,24 @@ semantic_analize :: proc(ctx: ^ParseCtx, ast: Ast) {
 
         case ^AstStruct:
             it := ast.(^AstStruct);
-            // @Unfinished @Todo check for each of the default args that they are the same type as the field type + infer if unspecified
+            for &field in it.fields {
+                #partial switch _ in field.type {
+                case UnparsedType: field.type = StructType{field.type.(UnparsedType).ast.(^AstDeclaration).value.(^AstStruct)} // @Hack @Unfinished Properly check what type it is and use that.
+                case PrimitiveType: 
+                    if field.type == PrimitiveType.UNKNOWN {
+                        fmt.println("TODO: infer struct fields.")
+                    }
+                }
+
+                #partial switch _ in field.type {
+                case StructType:
+                    if field.type.(StructType).ast == it {
+                        compiler_error(ctx.file, field.span, "Cylic dependancy found. Would result in infinite size.")
+                    }
+                }
+                // @Unfinished @Todo check the default value that it's the same type as the field type + infer if unspecified
+            }
+            // @Unfinished @Todo Sizing for structs
 
         case ^AstAccess:
             it := ast.(^AstAccess);
@@ -1671,6 +1827,9 @@ semantic_analize :: proc(ctx: ^ParseCtx, ast: Ast) {
     }
 }
 
+C_ARRAY_STRUCT_NAME :: "ZeusArray___"
+C_DYNAMIC_ARRAY_STRUCT_NAME :: "ZeusDynamicArray___"
+
 c_type :: proc(ctx: ^ParseCtx, type: ^Type) -> string {
     switch _ in type {
     case PrimitiveType: 
@@ -1688,9 +1847,10 @@ c_type :: proc(ctx: ^ParseCtx, type: ^Type) -> string {
         }
 
     case PointerType: return fmt.aprintf("%v*", c_type(ctx, type.(PointerType).inner))
-    case ArrayType: return "<ARRAY>"
+    case ArrayType: return type.(ArrayType).is_dynamic ? C_DYNAMIC_ARRAY_STRUCT_NAME : C_ARRAY_STRUCT_NAME
     case StructType: return fmt.aprintf("struct %v", type.(StructType).ast.name)
     case FunctionType: return "<FUNCTION TYPE>"
+    case UnparsedType: return "<UNPARSED TYPE>"
     }
     return "<UNREACHABLE>"
 }
@@ -1727,6 +1887,63 @@ c_function_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
     return strings.to_string(code)
 }
 
+c_array_data_name :: proc(lines: ^strings.Builder, ctx: ^CGenCtx, span: Span) {
+    // @Unfinished Should include filename as well 
+    fmt.sbprintf(lines, "ARRAY_DATA__%v_%v", span.start, span.end)
+}
+
+c_declare_array_data :: proc(lines: ^strings.Builder, ctx: ^CGenCtx, ast: Ast) {
+    switch _ in ast {
+    case ^AstScope:
+        it := ast.(^AstScope);
+        for stmt in it.stmts {
+            c_declare_array_data(lines, ctx, stmt)
+        }
+
+    case ^AstNumberLit:
+    case ^AstVariable:
+    case ^AstStringLit:
+    case ^AstBinOp:
+    case ^AstUnaryOp:
+    case ^AstDeclaration:
+        it := ast.(^AstDeclaration)
+        #partial switch _ in it.value {
+        case ^AstArrayLit:
+            arr := it.value.(^AstArrayLit)
+            fmt.sbprintf(lines, "static const %v ", c_type(ctx.parser, arr.type.(ArrayType).inner))
+            c_array_data_name(lines, ctx, get_span(it.value)^)
+            fmt.sbprint(lines, "[]")
+
+            fmt.sbprint(lines, " = ")
+
+            fmt.sbprint(lines, "{")
+            for &val in arr.values {
+                fmt.sbprintf(lines, "%v, ", c_code_gen(ctx, val))
+            }
+            fmt.sbprint(lines, "};\n");
+        case ^AstProcedure:
+             c_declare_array_data(lines, ctx, it.value)
+        }
+    case ^AstAssignment:
+        it := ast.(^AstAssignment)
+        #partial switch _ in it.rhs {
+        case ^AstArrayLit:
+            fmt.sbprintf(lines, "static const %v ", c_type(ctx.parser, it.rhs.(^AstArrayLit).type.(ArrayType).inner))
+        }
+    case ^AstProcedureCall:
+    case ^AstProcedure:
+         c_declare_array_data(lines, ctx, ast.(^AstProcedure).body)
+    case ^AstStruct:
+    case ^AstIf:
+    case ^AstWhile:
+    case ^AstReturn:
+    case ^AstAccess:
+    case ^AstEmitCode:
+    case ^AstArrayLit:
+        fmt.println("TODO: array literals in non declaration or assignments")
+    }
+}
+
 c_scope_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
     it := ast.(^AstScope);
 
@@ -1745,6 +1962,19 @@ c_scope_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
     defer delete(outside_pad)
 
     if is_file { 
+        fmt.sbprintln(&lines, "// ----------- PRELUDE -----------")
+
+        fmt.sbprintln(&lines, "typedef struct {")
+        fmt.sbprintln(&lines, "    void *items;")
+        fmt.sbprintln(&lines, "    long count;")
+        fmt.sbprintln(&lines, "}", C_ARRAY_STRUCT_NAME, ";\n")
+
+        fmt.sbprintln(&lines, "typedef struct {")
+        fmt.sbprintln(&lines, "    void *items;")
+        fmt.sbprintln(&lines, "    long count;")
+        fmt.sbprintln(&lines, "    long capacity;")
+        fmt.sbprintln(&lines, "} DynamicArray;\n")
+
         fmt.sbprintln(&lines, "// ----------- FORWARD DECLARATIONS (TYPES) -----------")
 
         ctx.forward_declare = true;
@@ -1755,7 +1985,9 @@ c_scope_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
                 decl := stmt.(^AstDeclaration)
                 #partial switch _ in decl.value {
                 case ^AstStruct: 
-                    fmt.sbprintf(&lines, "struct %v;\n", decl.name)
+                    // fmt.sbprintf(&lines, "struct %v;\n", decl.name)
+                    fmt.sbprint(&lines, c_declaration_gen(ctx, stmt))
+                    fmt.sbprint(&lines, ";\n")
                 }
             }
         }
@@ -1775,6 +2007,9 @@ c_scope_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
             }
         }
         ctx.forward_declare = false;
+
+        fmt.sbprintln(&lines, "\n// ----------- ARRAY DATA -----------")
+        c_declare_array_data(&lines, ctx, it)
 
         fmt.sbprintln(&lines, "\n// ----------- PROGRAM CODE -----------")
     } else {
@@ -1865,7 +2100,11 @@ c_declaration_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
             ret := &it.value.(^AstProcedure).return_type
             return fmt.aprintf("%v %v%v", c_type(ctx.parser, ret), it.name, c_code_gen(ctx, it.value))
         case ^AstStruct: 
-            return fmt.aprintf("struct %v %v", it.name, c_code_gen(ctx, it.value))
+            if ctx.forward_declare {
+                return fmt.aprintf("struct %v %v", it.name, c_code_gen(ctx, it.value))
+            } else {
+                return ""
+            }
         }
         return fmt.aprintf("%v %v = %v", c_type(ctx.parser, &it.type), it.name, c_code_gen(ctx, it.value))
     }
@@ -1900,6 +2139,19 @@ c_code_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
         case ^AstStringLit:
             it := ast.(^AstStringLit)
             return fmt.aprintf("\"%v\"", it.value)
+        case ^AstArrayLit: 
+            it := ast.(^AstArrayLit)
+            code: strings.Builder
+            fmt.sbprintf(&code, "(%v){{", C_ARRAY_STRUCT_NAME);
+            fmt.sbprint(&code, ".items = (void*)");
+            c_array_data_name(&code, ctx, it.span);
+            fmt.sbprint(&code, ", ");
+
+            fmt.sbprintf(&code, ".count = %v", len(it.values));
+
+            fmt.sbprint(&code, "}");
+            return strings.to_string(code)
+
         case ^AstDeclaration:
             return c_declaration_gen(ctx, ast)
         case ^AstProcedureCall:
@@ -1912,7 +2164,7 @@ c_code_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
             it := ast.(^AstStruct);
             code: strings.Builder
             fmt.sbprintln(&code, "{")
-            for field in it.fields {
+            for &field in it.fields {
                 t := field.type
                 fmt.sbprintln(&code, c_type(ctx.parser, &t), field.name, ";")
             }
@@ -1950,11 +2202,13 @@ main :: proc() {
 
     ast := parse(&parse_ctx)
     if len(parse_ctx.tokens) != 0 {
-        compiler_error(&ctx, span_from_token(&parse_ctx.tokens[0]), "Error: Could not parse rest of input. Found '%v'", parse_ctx.tokens[0])
+        compiler_error(&ctx, span_from_token(&parse_ctx.tokens[0]), "Could not parse rest of input. Found '%v'", parse_ctx.tokens[0])
     }
+    // if get_current_scope(parse_ctx).parent != nil {
+    //     compiler_error(&ctx, Span{0, 0}, "Compiler error: left with non-global scope after parsing.")
+    // }
 
     semantic_analize(&parse_ctx, ast)
-    // fmt.println(ast_to_string(ast))
 
     if ctx.error_count == 0 {
         fmt.println("Success!")

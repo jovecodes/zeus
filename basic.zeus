@@ -1,0 +1,4 @@
+#emit "#include <stdio.h>"
+printf :: fn(fmt: string, args: ..) #foreign;
+scanf :: fn(fmt: string, args: ..) #foreign;
+
