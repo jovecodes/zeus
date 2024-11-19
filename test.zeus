@@ -24,15 +24,23 @@ take_int :: fn(a: int) {
     printf("a = %d\n", a);
 }
 
-take_array :: fn(arr: [] int) {
+take_array :: fn(arr: [] float) {
+    // for i: 0..10 {
+    //     printf("i: %d\n", i);
+    // }
     i := 0;
     while i < arr.count {
-        printf("%d\n", i);
+        printf("%d: %f\n", i, arr[i]);
         i += 1;
     }
+
+    // printf("first: %d\n", arr[0]);
+    // for i: arr {
+    //     printf("%d\n", i);
+    // }
 }
 
-main :: fn() int {
+main :: fn() s32 {
     x := 20;
     foo: Foo;
 
@@ -40,7 +48,7 @@ main :: fn() int {
     // literal     :: Foo{x}; <- would result in an error.
     // constructor := Foo{x};
 
-    xs := [] int {10, 20, 30};
+    xs := [] float {10, 20, 30};
     take_array(xs);
 
     take_foo_ptr(@foo);

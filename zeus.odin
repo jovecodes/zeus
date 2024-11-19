@@ -50,6 +50,17 @@ TokenType :: enum u8 {
     KEYWORD_FLOAT,
     KEYWORD_STRING,
 
+    KEYWORD_F32,
+    KEYWORD_F64,
+    KEYWORD_U8,
+    KEYWORD_U16,
+    KEYWORD_U32,
+    KEYWORD_U64,
+    KEYWORD_S8,
+    KEYWORD_S16,
+    KEYWORD_S32,
+    KEYWORD_S64,
+
     KEYWORD_FN,
     KEYWORD_IF,
     KEYWORD_WHILE,
@@ -142,6 +153,17 @@ KEYWORD_MAP :: [] TokenMap{
     TokenMap{"return", .KEYWORD_RETURN},
     TokenMap{"fn", .KEYWORD_FN},
     TokenMap{"struct", .KEYWORD_STRUCT},
+
+    TokenMap{"f32", .KEYWORD_F32},
+    TokenMap{"f64", .KEYWORD_F64},
+    TokenMap{"u8", .KEYWORD_U8},
+    TokenMap{"u16", .KEYWORD_U16},
+    TokenMap{"u32", .KEYWORD_U32},
+    TokenMap{"u64", .KEYWORD_U64},
+    TokenMap{"s8", .KEYWORD_S8},
+    TokenMap{"s16", .KEYWORD_S16},
+    TokenMap{"s32", .KEYWORD_S32},
+    TokenMap{"s64", .KEYWORD_S64},
 };
 
 DIRECTIVE_MAP :: [] TokenMap{
@@ -395,6 +417,12 @@ AstAccess :: struct {
     span: Span,
 }
 
+AstIndex :: struct {
+    array: Ast,
+    index: Ast,
+    span: Span,
+}
+
 // @Temporary
 AstEmitCode :: struct {
     code: string,
@@ -418,6 +446,7 @@ Ast :: union {
     ^AstWhile,
     ^AstReturn,
     ^AstAccess,
+    ^AstIndex,
 
     ^AstEmitCode,
 }
@@ -620,6 +649,7 @@ token_precedence :: proc(token: TokenType) -> int {
     case .MOD: return 3 // Same as in C for now but maybe this is not the right precedence.
 
     case .DOT: return 4
+    case .OPEN_BRACKET: return 4
     }
     return -1 
 }
@@ -642,6 +672,7 @@ get_span :: proc(ast: Ast) -> ^Span {
         case ^AstWhile: return &ast.(^AstWhile).span
         case ^AstReturn: return &ast.(^AstReturn).span
         case ^AstAccess: return &ast.(^AstAccess).span
+        case ^AstIndex: return &ast.(^AstIndex).span
 
         case ^AstEmitCode: return &ast.(^AstEmitCode).span
     }
@@ -738,6 +769,20 @@ parse_expr_1 :: proc(ctx: ^ParseCtx, _lhs: Ast, min_precedence: int) -> Ast {
             end_span := span_from_token(value)
             it := new(AstAccess)
             it^ = AstAccess{lhs, value.value, span_stretch(get_span(lhs), &end_span)}
+            lhs = it
+            continue
+        } else if op.type == .OPEN_BRACKET {
+            index := parse_expr(ctx)
+
+            end_bracket := expect_token(ctx, .CLOSE_BRACKET)
+            if end_bracket == nil {
+                parser_error_at_next(ctx, "Expected ']'.")
+                return nil
+            }
+            end_span := span_from_token(end_bracket)
+
+            it := new(AstIndex)
+            it^ = AstIndex{lhs, index, span_stretch(get_span(lhs), &end_span)}
             lhs = it
             continue
         }
@@ -966,11 +1011,21 @@ parse_type :: proc(ctx: ^ParseCtx, span: ^Span = nil) -> Type {
         return StructType{sym.ast.value.(^AstStruct)}
     }
 
-    if token.type == .KEYWORD_INT { return PrimitiveType.INT }
-    if token.type == .KEYWORD_FLOAT { return PrimitiveType.FLOAT }
+    if token.type == .KEYWORD_INT { return PrimitiveType.S64 }
+    if token.type == .KEYWORD_FLOAT { return PrimitiveType.F64 }
     if token.type == .KEYWORD_STRING { return PrimitiveType.STRING }
     if token.type == .KEYWORD_VOID { return PrimitiveType.VOID }
     if token.type == .DOT_DOT { return PrimitiveType.VARIADIC }
+	if token.type == .KEYWORD_F32 { return PrimitiveType.F32 }
+	if token.type == .KEYWORD_F64 { return PrimitiveType.F64 }
+	if token.type == .KEYWORD_U8 { return PrimitiveType.U8 }
+	if token.type == .KEYWORD_U16 { return PrimitiveType.U16 }
+	if token.type == .KEYWORD_U32 { return PrimitiveType.U32 }
+	if token.type == .KEYWORD_U64 { return PrimitiveType.U64 }
+	if token.type == .KEYWORD_S8 { return PrimitiveType.S8 }
+	if token.type == .KEYWORD_S16 { return PrimitiveType.S16 }
+	if token.type == .KEYWORD_S32 { return PrimitiveType.S32 }
+	if token.type == .KEYWORD_S64 { return PrimitiveType.S64 }
 
     parser_error_at_next(ctx, "Could not parse type '%v'.", token.value)
     return PrimitiveType.UNKNOWN
@@ -1203,6 +1258,10 @@ ast_to_string :: proc(ast: Ast, indent := 0) -> string {
             it := ast.(^AstAccess);
             return fmt.aprintf("%v.%v", ast_to_string(it.node), it.value)
 
+        case ^AstIndex:
+            it := ast.(^AstIndex);
+            return fmt.aprintf("%v[%v]", ast_to_string(it.array), ast_to_string(it.index))
+
         case ^AstNumberLit: return ast.(^AstNumberLit).value;
         case ^AstVariable: return ast.(^AstVariable).value;
         case ^AstStringLit: return strings.concatenate({"\"", ast.(^AstStringLit).value, "\""});
@@ -1361,12 +1420,21 @@ PrimitiveType :: enum {
     UNKNOWN, // Not a real type. Just used for declarations that have not been inferred yet.
     VOID,
     NUMBER, // Can coerce to any number type.
-    INT,
-    FLOAT,
     BOOL,
     STRING,
     CHAR,
     VARIADIC,
+
+    F32,
+    F64,
+    U8,
+    U16,
+    U32,
+    U64,
+    S8,
+    S16,
+    S32,
+    S64,
 }
 
 FunctionType :: struct {
@@ -1485,6 +1553,17 @@ get_type_of :: proc(ctx: ^ParseCtx, ast: Ast) -> Type {
             } else {
                 return get_type_of(ctx, it.inner)
             }
+
+        case ^AstIndex:
+            it := ast.(^AstIndex)
+
+            array_type := get_type_of(ctx, it.array)
+            #partial switch _ in array_type {
+            case ArrayType:
+                return array_type.(ArrayType).inner^
+            }
+            compiler_error(ctx.file, get_span(it)^, "Trying to index on non-array type. Indexing on pointers is not supported yet. Sorry!")
+            return PrimitiveType.UNKNOWN
             
         case ^AstVariable: 
             it := ast.(^AstVariable)
@@ -1535,7 +1614,7 @@ get_type_of :: proc(ctx: ^ParseCtx, ast: Ast) -> Type {
                 ok = true
             case ArrayType:
                 if it.value == "count" {
-                    return PrimitiveType.INT;
+                    return PrimitiveType.S64;
                 }
                 compiler_error(ctx.file, it.span, "Arrays do not have property '%v'.", it.value)
             }
@@ -1562,9 +1641,17 @@ is_number_like :: proc(t: Type) -> bool {
     #partial switch _ in t {
     case PrimitiveType:
         #partial switch t.(PrimitiveType) {
-        case .INT: return true
-        case .FLOAT: return true
         case .NUMBER: return true
+		case .F32: return true
+		case .F64: return true
+		case .U8: return true
+		case .U16: return true
+		case .U32: return true
+		case .U64: return true
+		case .S8: return true
+		case .S16: return true
+		case .S32: return true
+		case .S64: return true
         }
     }
     return false
@@ -1595,6 +1682,25 @@ compare_types :: proc(a: Type, b: Type) -> bool {
     return a == b
 }
 
+is_integer :: proc(t: ^Type) -> bool {
+    ok := false
+    #partial switch _ in t {
+    case PrimitiveType: ok = true
+    }
+    if !ok { return false }
+
+    p := t.(PrimitiveType)
+    if p == PrimitiveType.S8  { return true }
+    if p == PrimitiveType.S16 { return true }
+    if p == PrimitiveType.S32 { return true }
+    if p == PrimitiveType.S64 { return true }
+    if p == PrimitiveType.U8  { return true }
+    if p == PrimitiveType.U16 { return true }
+    if p == PrimitiveType.U32 { return true }
+    if p == PrimitiveType.U64 { return true }
+    return false
+}
+
 check_bin_op :: proc(ctx: ^ParseCtx, it: ^AstBinOp) {
     semantic_analize(ctx, it.lhs)
     semantic_analize(ctx, it.rhs)
@@ -1622,6 +1728,26 @@ semantic_analize :: proc(ctx: ^ParseCtx, ast: Ast) {
         case ^AstBinOp:
             it := ast.(^AstBinOp);
             check_bin_op(ctx, it)
+
+        case ^AstIndex:
+            it := ast.(^AstIndex);
+            semantic_analize(ctx, it.array)
+            semantic_analize(ctx, it.index)
+            array_type := get_type_of(ctx, it.array)
+            index_type := get_type_of(ctx, it.index)
+
+            array_ok := false
+            #partial switch _ in array_type {
+            case ArrayType:
+                array_ok = true
+            }
+            if !array_ok {
+                compiler_error(ctx.file, get_span(it)^, "Trying to index on non-array type. Indexing on pointers is not supported yet. Sorry!")
+            }
+
+            if !is_integer(&index_type) {
+                compiler_error(ctx.file, get_span(it.index)^, "Trying to index with non-integer value.")
+            }
 
         case ^AstAssignment:
             it := ast.(^AstAssignment);
@@ -1690,13 +1816,13 @@ semantic_analize :: proc(ctx: ^ParseCtx, ast: Ast) {
                     if it.type == .NUMBER {
                         // @Hack We should probably not just cast the value to a number literal here.
                         if strings.contains_rune(it.value.(^AstNumberLit).value, '.') {
-                            it.type = .FLOAT
+                            it.type = .F64
                         } else {
-                            it.type = .INT
+                            it.type = .S64
                         }
                     }
                 } else {
-                    if it.type != type {
+                    if !compare_types(it.type, type) {
                         compiler_error(ctx.file, get_span(it.value)^, 
                             "Value is expected to have type %v but is %v", type_to_string(it.type), type_to_string(type))
                     }
@@ -1838,11 +1964,20 @@ c_type :: proc(ctx: ^ParseCtx, type: ^Type) -> string {
         case .UNKNOWN: return "<UNKNOWN>"
         case .VOID: return "void"
         case .NUMBER: return "<NUMBER>"
-        case .INT: return "int"
-        case .FLOAT: return "float"
         case .STRING: return "const char *"
         case .CHAR: return "char"
         case .BOOL: return "int" // Use int for bool in C.
+
+        case .F32: return "float"
+        case .F64: return "double"
+        case .U8: return "unsigned char"
+        case .U16: return "unsigned short"
+        case .U32: return "unsigned int"
+        case .U64: return "unsigned long"
+        case .S8: return "signed char"
+        case .S16: return "signed short"
+        case .S32: return "signed int"
+        case .S64: return "signed long"
         case .VARIADIC: return "..."
         }
 
@@ -1939,6 +2074,7 @@ c_declare_array_data :: proc(lines: ^strings.Builder, ctx: ^CGenCtx, ast: Ast) {
     case ^AstReturn:
     case ^AstAccess:
     case ^AstEmitCode:
+    case ^AstIndex:
     case ^AstArrayLit:
         fmt.println("TODO: array literals in non declaration or assignments")
     }
@@ -2130,6 +2266,10 @@ c_code_gen :: proc(ctx: ^CGenCtx, ast: Ast) -> string {
             return fmt.aprintf("%v %v %v", c_code_gen(ctx, it.lhs), op_to_string(it.op), c_code_gen(ctx, it.rhs))
         case ^AstUnaryOp:
             return c_unary_op_gen(ctx, ast)
+        case ^AstIndex:
+            it := ast.(^AstIndex);
+            inner_type := get_type_of(ctx.parser, it.array).(ArrayType).inner
+            return fmt.aprintf("(((%v*) %v.items)[%v])", c_type(ctx.parser, inner_type), c_code_gen(ctx, it.array), c_code_gen(ctx, it.index))
         case ^AstVariable: 
             it := ast.(^AstVariable)
             return it.value
