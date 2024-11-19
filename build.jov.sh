@@ -1,4 +1,4 @@
 set -e
-../probe/odin/odin build ./zeus.odin -file -debug
+../probe/odin/odin build . -debug
 ./zeus ./test.zeus
 ./test

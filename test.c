@@ -23,7 +23,7 @@ void take_array(ZeusArray___ arr);
 signed int main();
 
 // ----------- ARRAY DATA -----------
-static const double ARRAY_DATA__1000_1022[] = {10, 20, 30, };
+static const double ARRAY_DATA__1000_1024[] = {10.5, 20, 30, };
 
 // ----------- PROGRAM CODE -----------
 #include <stdio.h>
@@ -52,22 +52,11 @@ void take_array(ZeusArray___ arr) {
 signed int main() {
     signed long x = 20;
     struct Foo foo = {0};
-    ZeusArray___ xs = (ZeusArray___){.items = (void*)ARRAY_DATA__1000_1022, .count = 3};
+    ZeusArray___ xs = (ZeusArray___){.items = (void*)ARRAY_DATA__1000_1024, .count = 3};
     take_array(xs);
     take_foo_ptr((&foo));
     take_foo(foo);
     take_int(foo.bar);
-    printf("Counting up to %d\n", x);
-    signed long i = 1;
-    while ((i <= x)) {
-        printf("%d, ", i);
-        if (((i % 20) == 0)) {
-            printf("\n");
-        }
-
-        i += 1;
-    }
-
     return 0;
 }
 
