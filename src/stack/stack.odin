@@ -11,7 +11,9 @@ Instruction :: enum int {
     SUB,
     MUL,
     DIV,
+    MOD,
 
+    // are faster and in place
     INCR,
     DECR,
 
@@ -22,6 +24,8 @@ Instruction :: enum int {
     // takes field index
     GET_FIELD, // [structure, index]
     SET_FIELD, // [structure, index, value]
+
+    RETURN_ADDRESS, // (value) pushes value to the control_stack
 
     // constants
     CONST_INT, // (value)
@@ -36,16 +40,16 @@ Instruction :: enum int {
     GT,
     GTE,
 
-    // absolute
+    // jumps use the control_stack for return addresses
     JMP, // jumps unconditionally
     JMP_IF, // [value] jumps if non-zero
 
-    // relative
-    RJMP,
-    RJMP_IF,
+    // relative: these use compile time constants
+    RJMP, // jumps unconditionally
+    RJMP_IF, // [value] jumps if non-zero
 
     // temporary
-    DEBUG_LOG, // [value]
+    DEBUG_LOG, // prints the entire operand stack
 }
 
 Structure :: struct {
@@ -60,6 +64,7 @@ Operand :: union {
 
 StackMachine :: struct {
     operands: [dynamic] Operand,
+    control_stack: [dynamic] int,
     instructions: [] int,
     ip: int,
 
@@ -111,7 +116,7 @@ do_bin_op :: proc(
         return true
     }
 
-    append(&machine.operands, a, b)
+    append(&machine.operands, op(a, b))
 
     // Move to the next instruction
     machine.ip += 1
@@ -136,6 +141,7 @@ step :: proc(machine: ^StackMachine) -> bool {
 
     switch instruction {
     case int(Instruction.HALT):
+        fmt.println("halting...")
         return true
     case int(Instruction.ADD):
         return do_bin_op(machine, "Add", proc(a: Operand, b: Operand) -> Operand { 
@@ -169,6 +175,16 @@ step :: proc(machine: ^StackMachine) -> bool {
             #partial switch _ in a {
             case int: return a.(int) / b.(int)
             case f64: return a.(f64) / b.(f64)
+            }
+            print_error("Can not do binary operation on %v and %v", a, b)
+			return 0
+        })
+
+    case int(Instruction.MOD):
+        return do_bin_op(machine, "Mod", proc(a: Operand, b: Operand) -> Operand { 
+            #partial switch _ in a {
+            case int: return a.(int) % b.(int)
+            // case f64: return a.(f64) / b.(f64)
             }
             print_error("Can not do binary operation on %v and %v", a, b)
 			return 0
@@ -253,12 +269,8 @@ step :: proc(machine: ^StackMachine) -> bool {
         return true
 
     case int(Instruction.JMP):
-        machine.ip += 1
-        if machine.ip >= len(machine.instructions) {
-            print_error("JMP: Out of bounds")
-            return true
-        }
-        target := machine.instructions[machine.ip]
+        assert(len(machine.control_stack) > 0)
+        target := pop(&machine.control_stack)
         if target < 0 || target >= len(machine.instructions) {
             print_error("JMP: Invalid jump target %v", target)
             return true
@@ -267,10 +279,10 @@ step :: proc(machine: ^StackMachine) -> bool {
         return false
 
     case int(Instruction.JMP_IF):
-        if len(machine.operands) < 1 {
-            print_error("JMP_IF: Stack underflow")
-            return true
-        }
+        assert(len(machine.control_stack) > 0)
+        target := pop(&machine.control_stack)
+
+        assert(len(machine.operands) > 0)
         condition := pop(&machine.operands)
 
         // Validate condition operand type
@@ -278,17 +290,6 @@ step :: proc(machine: ^StackMachine) -> bool {
         #partial switch _ in condition { case int: ok = true }
         if !ok {
             print_error("JMP_IF: Condition must be an int")
-            return true
-        }
-
-        machine.ip += 1
-        if machine.ip >= len(machine.instructions) {
-            print_error("JMP_IF: Out of bounds")
-            return true
-        }
-        target := machine.instructions[machine.ip]
-        if target < 0 || target >= len(machine.instructions) {
-            print_error("JMP_IF: Invalid jump target %v", target)
             return true
         }
 
@@ -385,6 +386,14 @@ step :: proc(machine: ^StackMachine) -> bool {
         machine.ip += 1
         return false
 
+    case int(Instruction.RETURN_ADDRESS):
+        machine.ip += 1
+        val := machine.instructions[machine.ip]
+        append(&machine.control_stack, val)
+
+        machine.ip += 1
+        return false
+
     case int(Instruction.GET_FIELD):
         machine.ip += 1
         index     := pop(&machine.operands)
@@ -399,9 +408,12 @@ step :: proc(machine: ^StackMachine) -> bool {
         structure.(Structure).fields[index.(int)] = value
 
     case int(Instruction.DEBUG_LOG):
-        assert(len(machine.operands) > 0, "Trying to debug value with empty stack.")
-        op := machine.operands[len(machine.operands) - 1]
-        fmt.println(op)
+        fmt.print("[")
+        for i in 0..<len(machine.operands) {
+            if i > 0 { fmt.print(", ") }
+            fmt.print(machine.operands[i])
+        }
+        fmt.println("]")
 
         machine.ip += 1
         return false
@@ -419,18 +431,70 @@ run :: proc(machine: ^StackMachine) {
     }
 }
 
+
+for_loop_start :: proc(code: ^[dynamic] int, low: int) {
+    append(code, opcode(.CONST_INT), low - 1) // because increment
+
+    ret_addr := len(code)
+    append(code, opcode(.RETURN_ADDRESS), ret_addr)
+
+    append(code, opcode(.INCR))
+}
+
+for_loop_end :: proc(code: ^[dynamic] int, high: int) {
+    append(code, 
+        opcode(.COPY), -1,
+        opcode(.CONST_INT), high,
+        opcode(.LT),
+        opcode(.JMP_IF),
+    )
+}
+
+print_even :: proc(code: ^[dynamic] int) {
+    // for i: 0..10 {
+    //     if i % 2 == 0 {
+    //         println(i);
+    //     }
+    // }
+    for_loop_start(code, 0)
+        append(code, 
+            opcode(.COPY), -1,
+            opcode(.CONST_INT), 2,
+            opcode(.MOD),
+
+            opcode(.RJMP_IF), 2,
+            opcode(.DEBUG_LOG)
+        )
+    for_loop_end(code, 10)
+}
+
 main :: proc() {
     machine: StackMachine
-    machine.instructions = {
-        opcode(.CONST_INT), 10,
 
-        opcode(.DEBUG_LOG), 
-        opcode(.DECR),
-        opcode(.COPY), -1,
-        opcode(.RJMP_IF), -5,
+    code: [dynamic] int
+    defer delete(code)
 
-        opcode(.HALT),
-    }
+    print_even(&code)
+
+    // for_loop_start(&code, 0)
+    //     append(&code, opcode(.DEBUG_LOG))
+    // for_loop_end(&code, 10)
+
+    append(&code, opcode(.HALT))
+    machine.instructions = code[:]
+
+    // machine.instructions = {
+    //     opcode(.CONST_INT), 0,
+    //     opcode(.INCR),
+    //     opcode(.DEBUG_LOG),
+    //
+    //     opcode(.COPY), -1,
+    //     opcode(.CONST_INT), 10,
+    //     opcode(.LT),
+    //     opcode(.JMP_IF), 2,
+    //
+    //     opcode(.HALT),
+    // }
 
     run(&machine)
 }
