@@ -1,7 +1,9 @@
 set -e
-# ../probe/odin/odin build src -debug -out:zeus
+../probe/odin/odin build src -debug -out:zeus
 # ./zeus ./test.zeus
 # ./test
-#
-../probe/odin/odin build src/stack/stack.odin -file -debug -out:stack
-./stack
+
+./zeus ./test_stack.zeus
+
+# ../probe/odin/odin build src/stack/stack.odin -file -debug -out:stack
+# ./stack

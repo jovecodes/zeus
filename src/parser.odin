@@ -331,7 +331,7 @@ parse_primary :: proc(ctx: ^ParseCtx) -> Ast {
         } else {
             it := new(AstVariable)
             it^ = AstVariable{name.value, span_from_token(name), get_current_scope(ctx).n}
-            get_current_scope(ctx).n += 1
+            // get_current_scope(ctx).n += 1 // @Todo does this need to happen?
             return it
         }
     case .OPEN_PAREN:

@@ -158,12 +158,17 @@ get_type_of :: proc(ctx: ^ParseCtx, ast: Ast) -> Type {
             }
             return decl.ast.type;
 
-        case ^AstNumberLit: return PrimitiveType.NUMBER
-        case ^AstStringLit: return PrimitiveType.STRING
+        case ^AstNumberLit: 
+            return PrimitiveType.NUMBER
 
-        case ^AstArrayLit: return ast.(^AstArrayLit).type
+        case ^AstStringLit: 
+            return PrimitiveType.STRING
 
-        case ^AstDeclaration: return PrimitiveType.VOID
+        case ^AstArrayLit: 
+            return ast.(^AstArrayLit).type
+
+        case ^AstDeclaration: 
+            return PrimitiveType.VOID
 
         case ^AstProcedureCall:
             it := ast.(^AstProcedureCall);
@@ -219,6 +224,18 @@ get_type_of :: proc(ctx: ^ParseCtx, ast: Ast) -> Type {
         case ^AstEmitCode: return PrimitiveType.VOID
     }
     return PrimitiveType.VOID
+}
+
+should_default_to_float :: proc(ast: Ast) -> bool {
+    #partial switch _ in ast {
+    case ^AstNumberLit:
+        return strings.contains_rune(ast.(^AstNumberLit).value, '.')
+    case ^AstBinOp:
+        it := ast.(^AstBinOp)
+        return should_default_to_float(it.lhs) || should_default_to_float(it.rhs)
+    }
+    // @Unfinished does this seem right?
+    return false
 }
 
 is_number_like :: proc(t: Type) -> bool {
@@ -398,8 +415,7 @@ semantic_analize :: proc(ctx: ^ParseCtx, ast: Ast) {
                 if it.type == PrimitiveType.UNKNOWN {
                     it.type = type
                     if it.type == .NUMBER {
-                        // @Hack We should probably not just cast the value to a number literal here.
-                        if strings.contains_rune(it.value.(^AstNumberLit).value, '.') {
+                        if should_default_to_float(it.value) {
                             it.type = .F64
                         } else {
                             it.type = .S64

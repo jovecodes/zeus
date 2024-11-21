@@ -5,6 +5,8 @@ import "core:strings"
 import "core:os"
 import "core:c/libc"
 
+import "stack"
+
 FileCtx :: struct {
     input: string,
     filename: string,
@@ -38,22 +40,32 @@ main :: proc() {
 
     if ctx.error_count == 0 {
         fmt.println("Success!")
-    } else if ctx.error_count == 1 {
-        fmt.printfln("Compilation failed with 1 error.")
-        os.exit(1)
     } else {
-        fmt.printfln("Compilation failed with %v errors.", ctx.error_count)
+        fmt.printfln("Compilation failed with %v %v.", ctx.error_count, ctx.error_count == 1 ? "error" : "errors")
         os.exit(1)
     }
 
-    gen_ctx := CGenCtx{&parse_ctx, 0, false, false}
-    res := c_code_gen(&gen_ctx, ast)
+    gen_mode := "stack"
 
-    c_file, _ := strings.replace_all(ctx.filename, ".zeus", ".c")
-    os.write_entire_file(c_file, transmute([]u8)res)
+    if gen_mode == "c" {
+        gen_ctx := CGenCtx{&parse_ctx, 0, false, false}
+        res := c_code_gen(&gen_ctx, ast)
 
-    exe_file, _ := strings.replace_all(ctx.filename, ".zeus", "")
-    command := fmt.aprintf("gcc -o %v %v", exe_file, c_file)
+        c_file, _ := strings.replace_all(ctx.filename, ".zeus", ".c")
+        os.write_entire_file(c_file, transmute([]u8)res)
 
-    status := libc.system(strings.unsafe_string_to_cstring(command))
+        exe_file, _ := strings.replace_all(ctx.filename, ".zeus", "")
+        command := fmt.aprintf("gcc -o %v %v", exe_file, c_file)
+
+        status := libc.system(strings.unsafe_string_to_cstring(command))
+    } else if gen_mode == "stack" {
+        gen_ctx: StackGenCtx
+        gen_ctx.parser = &parse_ctx
+        stack_code_gen(&gen_ctx, ast)
+        append(&gen_ctx.code, stack.opcode(.HALT))
+        gen_ctx.machine.instructions = gen_ctx.code[:]
+        fmt.println("Instructions:", gen_ctx.code)
+        stack.run(&gen_ctx.machine)
+
+    }
 }
