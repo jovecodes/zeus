@@ -1,4 +1,12 @@
 x := 10 + 3 * 2;
 y := x + 2;
 
-x = y;
+x += y;
+
+if 0 && 0 {
+    y = 69;
+}
+
+add :: fn(a: int, b: int) int {
+    return a + b;
+}

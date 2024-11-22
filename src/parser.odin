@@ -354,15 +354,21 @@ token_precedence :: proc(token: TokenType) -> int {
     if is_compare_op(token) { return 1 }
 
     #partial switch token {
-    case .ADD: return 2
-    case .SUB: return 2
+    case .LOG_OR: return 2
+    case .LOG_AND: return 3
 
-    case .MUL: return 3
-    case .DIV: return 3
-    case .MOD: return 3 // Same as in C for now but maybe this is not the right precedence.
+    case .BIT_OR: return 4
+    case .BIT_AND: return 5
 
-    case .DOT: return 4
-    case .OPEN_BRACKET: return 4
+    case .ADD: return 6
+    case .SUB: return 6
+
+    case .MUL: return 7
+    case .DIV: return 7
+    case .MOD: return 7 // Same as in C for now but maybe this is not the right precedence.
+
+    case .DOT: return 8
+    case .OPEN_BRACKET: return 8
     }
     return -1 
 }

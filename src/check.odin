@@ -259,11 +259,17 @@ is_number_like :: proc(t: Type) -> bool {
 }
 
 compare_types :: proc(a: Type, b: Type) -> bool {
+    if (a == PrimitiveType.BOOL && (is_integer(b) || b == PrimitiveType.NUMBER)) || (b == PrimitiveType.BOOL && (is_integer(a) || a == PrimitiveType.NUMBER)) {
+        fmt.println("here")
+        return true
+    }
+
     if a == PrimitiveType.NUMBER {
         return is_number_like(b)
     } else if b == PrimitiveType.NUMBER {
         return is_number_like(a)
     }
+
     #partial switch _ in a {
     case PointerType: 
         #partial switch _ in b {
@@ -283,7 +289,7 @@ compare_types :: proc(a: Type, b: Type) -> bool {
     return a == b
 }
 
-is_integer :: proc(t: ^Type) -> bool {
+is_integer :: proc(t: Type) -> bool {
     ok := false
     #partial switch _ in t {
     case PrimitiveType: ok = true
@@ -346,7 +352,7 @@ semantic_analize :: proc(ctx: ^ParseCtx, ast: Ast) {
                 compiler_error(ctx.file, get_span(it)^, "Trying to index on non-array type. Indexing on pointers is not supported yet. Sorry!")
             }
 
-            if !is_integer(&index_type) {
+            if !is_integer(index_type) {
                 compiler_error(ctx.file, get_span(it.index)^, "Trying to index with non-integer value.")
             }
 

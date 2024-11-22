@@ -13,6 +13,11 @@ Instruction :: enum int {
     DIV,
     MOD,
 
+    // These don't short circuit
+    NOT,
+    OR,
+    AND,
+
     // are faster and in place
     INCR,
     DECR,
@@ -44,13 +49,21 @@ Instruction :: enum int {
     LLOAD, // (variable index: n) local load
     LSTORE, // (variable index: n) local store
 
+    LLOAD_FROM, // (relative scope, variable index: n) local load from relative scope
+    LSTORE_FROM, // (relative scope, variable index: n) local store from relative scope
+
     // jumps use the control_stack for return addresses
     BRK, // jumps unconditionally
     BRK_IF, // [value] jumps if non-zero
 
+    // absolute: these use compile time constants
+    JMP, // jumps unconditionally
+    JMP_IF, // [value] jumps if non-zero
+
     // relative: these use compile time constants
     RJMP, // jumps unconditionally
     RJMP_IF, // [value] jumps if non-zero
+
 
     // temporary
     STACK_TRACE, // prints the entire operand stack
@@ -211,6 +224,35 @@ step :: proc(machine: ^Machine) -> bool {
             print_error("Can not do binary operation on %v and %v", a, b)
 			return 0
         })
+
+    case int(Instruction.NOT):
+        it := back(&machine.operands)
+        if it.(int) == 0 {
+            it^ = 1
+        } else {
+            it^ = 0
+        }
+        machine.ip += 1
+        return false
+
+    case int(Instruction.OR):
+        return do_bin_op(machine, "Or", proc(a: Operand, b: Operand) -> Operand { 
+            #partial switch _ in a {
+            case int: return a.(int) | b.(int)
+            // case f64: return a.(f64) / b.(f64)
+            }
+            print_error("Can not do binary operation on %v and %v", a, b)
+			return 0
+        })
+    case int(Instruction.AND):
+        return do_bin_op(machine, "And", proc(a: Operand, b: Operand) -> Operand { 
+            #partial switch _ in a {
+            case int: return a.(int) & b.(int)
+            // case f64: return a.(f64) / b.(f64)
+            }
+            print_error("Can not do binary operation on %v and %v", a, b)
+			return 0
+        })
 	case int(Instruction.EQ):
         return do_bin_op(machine, "EQ", proc(a: Operand, b: Operand) -> Operand { 
             #partial switch _ in a {
@@ -312,6 +354,33 @@ step :: proc(machine: ^Machine) -> bool {
         machine.ip += 1
         return false
 
+    case int(Instruction.LLOAD_FROM):
+        machine.ip += 1
+        scope := machine.instructions[machine.ip]
+        machine.ip += 1
+        index := machine.instructions[machine.ip]
+        locals := &machine.frames[len(machine.frames) - 1 - scope].locals
+        append(&machine.operands, locals[index])
+        machine.ip += 1
+        return false
+
+    case int(Instruction.LSTORE_FROM):
+        machine.ip += 1
+        scope := machine.instructions[machine.ip]
+        machine.ip += 1
+        index := machine.instructions[machine.ip]
+        value := pop(&machine.operands)
+
+        locals := &machine.frames[len(machine.frames) - 1 - scope].locals
+        if len(locals) <= index {
+            // fmt.println(index, "=", value)
+            resize(locals, index + 1)
+        }
+        locals[index] = value
+
+        machine.ip += 1
+        return false
+
     case int(Instruction.BRK):
         target := pop_frame(machine)
         assert(target >= 0 && target < len(machine.instructions), "BRK: Invalid jump target")
@@ -321,14 +390,6 @@ step :: proc(machine: ^Machine) -> bool {
     case int(Instruction.BRK_IF):
         assert(len(machine.operands) > 0)
         condition := pop(&machine.operands)
-
-        // Validate condition operand type
-        ok := false
-        #partial switch _ in condition { case int: ok = true }
-        if !ok {
-            print_error("BRK_IF: Condition must be an int")
-            return true
-        }
 
         if condition.(int) != 0 { // Non-zero condition means jump
             target := pop_frame(machine)
@@ -340,6 +401,14 @@ step :: proc(machine: ^Machine) -> bool {
         }
         return false
 
+    case int(Instruction.JMP):
+        machine.ip += 1
+        assert(machine.ip < len(machine.instructions))
+        target := machine.instructions[machine.ip]
+        assert(target >= 0 && target < len(machine.instructions), "JMP: Invalid jump target")
+        machine.ip = target
+        return false
+
     case int(Instruction.RJMP):
         machine.ip += 1
         assert(machine.ip < len(machine.instructions))
@@ -348,22 +417,30 @@ step :: proc(machine: ^Machine) -> bool {
         machine.ip = target
         return false
 
+    case int(Instruction.JMP_IF):
+        assert(len(machine.operands) > 0)
+        condition := pop(&machine.operands)
+
+        machine.ip += 1
+        assert(machine.ip < len(machine.instructions))
+        target := machine.instructions[machine.ip]
+        assert(target >= 0 && target < len(machine.instructions), fmt.aprintf("JMP_IF: Invalid jump target %v (not between 0-%v)", target, len(machine.instructions) - 1))
+
+        if condition.(int) != 0 { // Non-zero condition means jump
+            machine.ip = target
+        } else {
+            machine.ip += 1
+        }
+        return false
+
     case int(Instruction.RJMP_IF):
         assert(len(machine.operands) > 0)
         condition := pop(&machine.operands)
 
-        // Validate condition operand type
-        ok := false
-        #partial switch _ in condition { case int: ok = true }
-        if !ok {
-            print_error("RJMP_IF: Condition must be an int")
-            return true
-        }
-
         machine.ip += 1
         assert(machine.ip < len(machine.instructions))
         target := machine.instructions[machine.ip] + machine.ip
-        assert(target >= 0 && target < len(machine.instructions), "RJMP_IF: Invalid jump target")
+        assert(target >= 0 && target < len(machine.instructions), fmt.aprintf("RJMP_IF: Invalid jump target %v (not between 0-%v)", target, len(machine.instructions) - 1))
 
         if condition.(int) != 0 { // Non-zero condition means jump
             machine.ip = target
@@ -436,12 +513,13 @@ step :: proc(machine: ^Machine) -> bool {
         structure.(Structure).fields[index.(int)] = value
 
     case int(Instruction.STACK_TRACE):
-        fmt.println(machine.operands)
+        fmt.println("Stack Trace:", machine.operands)
         machine.ip += 1
         return false
 
     case int(Instruction.LOCALS_TRACE):
-        fmt.println(back(&machine.frames).locals)
+        assert(len(machine.frames) > 0, "Can not trace locals with no frames!")
+        fmt.println("Locals Trace:", back(&machine.frames).locals)
         machine.ip += 1
         return false
     }

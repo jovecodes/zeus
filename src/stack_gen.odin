@@ -3,6 +3,7 @@ package zeus
 import "stack"
 
 import "core:strconv"
+import "core:fmt"
 
 StackGenCtx :: struct {
     parser: ^ParseCtx,
@@ -25,6 +26,9 @@ token_bin_op_to_stack :: proc(t: TokenType) -> int {
     case .DIV: return stack.opcode(.DIV)
     case .MOD: return stack.opcode(.MOD)
 
+    case .LOG_AND: return stack.opcode(.AND)
+    case .LOG_OR: return stack.opcode(.OR)
+
     case .ADD_ASSIGN: return stack.opcode(.ADD)
     case .SUB_ASSIGN: return stack.opcode(.SUB)
     case .MUL_ASSIGN: return stack.opcode(.MUL)
@@ -42,8 +46,19 @@ stack_code_gen :: proc(ctx: ^StackGenCtx, ast: Ast) {
         append(&ctx.code, stack.opcode(.CONST_INT), int(n))
     case ^AstVariable:
         it := ast.(^AstVariable)
-        decl, _ := symbol_table_lookup(ctx.parser, it.value)
-        append(&ctx.code, stack.opcode(.LLOAD), decl.n)
+        decl, scope := symbol_table_lookup(ctx.parser, it.value)
+
+        i := 0
+        current_scope := ctx.parser.current_scope
+        for current_scope != scope {
+            i += 1
+            current_scope = ctx.parser.scopes[current_scope].parent
+        }
+        if i == 0 {
+            append(&ctx.code, stack.opcode(.LLOAD), decl.n)
+        } else {
+            append(&ctx.code, stack.opcode(.LLOAD_FROM), i, decl.n)
+        }
         
     case ^AstStringLit: panic("todo")
     case ^AstArrayLit: panic("todo")
@@ -70,8 +85,18 @@ stack_code_gen :: proc(ctx: ^StackGenCtx, ast: Ast) {
             append(&ctx.code, token_bin_op_to_stack(it.op))
         }
 
-        decl, _ := symbol_table_lookup(ctx.parser, it.lhs.(^AstVariable).value)
-        append(&ctx.code, stack.opcode(.LSTORE), decl.n)
+        decl, scope := symbol_table_lookup(ctx.parser, it.lhs.(^AstVariable).value)
+        i := 0
+        current_scope := ctx.parser.current_scope
+        for current_scope != scope {
+            i += 1
+            current_scope = ctx.parser.scopes[current_scope].parent
+        }
+        if i == 0 {
+            append(&ctx.code, stack.opcode(.LSTORE), decl.n)
+        } else {
+            append(&ctx.code, stack.opcode(.LSTORE_FROM), i, decl.n)
+        }
 
     case ^AstProcedureCall: panic("todo")
     case ^AstScope:
@@ -85,12 +110,22 @@ stack_code_gen :: proc(ctx: ^StackGenCtx, ast: Ast) {
         }
         ctx.parser.current_scope = get_current_scope(ctx.parser).parent
 
-        append(&ctx.code, stack.opcode(.LOCALS_TRACE))
-
+        append(&ctx.code, stack.opcode(.LOCALS_TRACE)) // @Temporary
         append(&ctx.code, stack.opcode(.POP_FRAME))
     case ^AstProcedure: panic("todo")
     case ^AstStruct: panic("todo")
-    case ^AstIf: panic("todo")
+    case ^AstIf:
+        it := ast.(^AstIf)
+
+        stack_code_gen(ctx, it.predicate)
+
+        append(&ctx.code, stack.opcode(.NOT), stack.opcode(.JMP_IF), 0)
+        jmp_addr := &ctx.code[len(ctx.code) - 1]
+
+        stack_code_gen(ctx, it.body)
+
+        jmp_addr^ = len(ctx.code)
+        
     case ^AstWhile: panic("todo")
     case ^AstReturn: panic("todo")
     case ^AstAccess: panic("todo")

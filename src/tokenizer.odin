@@ -45,6 +45,11 @@ TokenType :: enum u8 {
     NOT, // !
     ADDRESS, // @
 
+    LOG_AND,
+    LOG_OR,
+    BIT_AND,
+    BIT_OR,
+
     KEYWORD_VOID,
     KEYWORD_INT,
     KEYWORD_FLOAT,
@@ -141,6 +146,11 @@ OPERATOR_MAP :: [] TokenMap{
 
     TokenMap{"!", .NOT},
     TokenMap{"@", .ADDRESS},
+
+    TokenMap{"&&", .LOG_AND},
+    TokenMap{"||", .LOG_OR},
+    TokenMap{"&", .BIT_AND},
+    TokenMap{"|", .BIT_OR},
 };
 
 KEYWORD_MAP :: [] TokenMap{
